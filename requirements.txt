@@ -1,0 +1,64 @@
+fastapi
+uvicorn[standard]
+python-multipart
+
+requests
+httpx
+websockets
+python-dotenv
+tavily-python>=0.7.0
+# LLM/LLM.py imports fitz for PDF OCR/rendering.
+PyMuPDF
+
+mcp>=1.0.0
+fastmcp
+langchain-mcp-adapters
+
+# Agent pipeline (from Main.py)
+# NOTE: LLM/LLM.py talks to OpenRouter directly via `requests`, not
+# ChatOllama, so langchain-ollama is not actually imported anywhere --
+# only langchain-core (used for prompts/messages/output parsers) is needed.
+langchain
+langchain-core
+langchain-openai
+langchain-community
+
+langgraph
+langgraph-checkpoint
+langgraph-cli
+langgraph-sdk
+langgraph-checkpoint-sqlite
+langsmith
+huggingface_hub
+sounddevice
+numpy>=2.1
+# openai-whisper depends on numba, and versions of numba before 0.61 cap
+# numpy<2.1 -- since numpy never shipped a prebuilt wheel for that <2.1 range
+# on Python 3.13, pip would otherwise backtrack to a wheel-less numpy 2.0.x
+# and try (and fail) to build it from source. numba>=0.61 is the first
+# release that supports both Python 3.13 and numpy>=2.1, so pinning it
+# avoids that backtrack entirely.
+numba>=0.61
+torch
+# transformers/tqdm removed: nothing in the backend imports them directly.
+# sentence-transformers and kokoro pull in whatever subset of transformers
+# they actually need as a transitive dependency.
+soundfile
+sentence-transformers
+# TTS (TTS/TTS.py) and STT (TTS/STT.py) both call OpenAI's hosted audio
+# models (gpt-4o-mini-tts / gpt-4o-mini-transcribe) through this client --
+# ElevenLabs is no longer used.
+openai
+# Used by TTS/TTS.py's play_file() for local CLI playback (Main.py only;
+# the FastAPI server returns base64 audio to the browser instead).
+playsound==1.2.2
+
+# API-key-free public web search, fetching, and crawling (web/web_tool.py)
+ddgs
+beautifulsoup4
+lxml
+psycopg2-binary
+boto3
+openai-agents[voice]
+livekit
+livekit-api

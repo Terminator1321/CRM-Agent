@@ -1,0 +1,7 @@
+venv/
+CRM_Unified/models
+/__pycache__/
+.env
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
