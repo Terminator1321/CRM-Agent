@@ -125,7 +125,13 @@ class CRMClient:
         if filters: params["filters"] = json.dumps(filters)
         if or_filters: params["or_filters"] = json.dumps(or_filters)
         if order_by: params["order_by"] = order_by
-        return self._request("GET", f"/api/resource/{quote(doctype, safe='')}", params=params, action=f"list {doctype}")
+        result = self._request("GET", f"/api/resource/{quote(doctype, safe='')}", params=params, action=f"list {doctype}")
+        # The REST /api/resource list endpoint returns {"data": [...]},
+        # not the RPC-style {"message": ...} envelope that _request()
+        # normally unwraps. Unwrap "data" here so callers always get a list.
+        if isinstance(result, dict) and "data" in result:
+            return result["data"]
+        return result
 
     def get_doc(self, doctype, name):
         return self._request("GET", f"/api/resource/{quote(doctype, safe='')}/{quote(str(name), safe='')}", action=f"read {doctype}")

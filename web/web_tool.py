@@ -111,6 +111,14 @@ _NON_OFFICIAL_HOSTS = {
     "google.com", "bing.com", "duckduckgo.com", "britannica.com",
     "forbes.com", "investopedia.com", "wsj.com", "ambitionbox.com",
     "tracxn.com", "tofler.in", "vccircle.com", "moneycontrol.com",
+    # Sales-intelligence / company-data aggregators -- these publish pages
+    # about companies under someone else's brand name in the URL/title
+    # (e.g. a globaldata.com page titled "Magna International Inc" for a
+    # search on "Magna Data"), so a naive title/URL match can pick the
+    # wrong company entirely. Never treat these as an official site.
+    "globaldata.com", "leadiq.com", "apollo.io", "rocketreach.co",
+    "clearbit.com", "pitchbook.com", "similarweb.com", "signalhire.com",
+    "lusha.com", "cognism.com", "seamless.ai",
 }
 
 _SOCIAL_PATTERNS = {
@@ -166,6 +174,38 @@ def _allowed_by_robots(url):
 def _is_non_official_host(netloc):
     host = netloc.lower()
     return any(host == h or host.endswith("." + h) for h in _NON_OFFICIAL_HOSTS)
+
+
+# Generic corporate words that don't distinguish one company from another
+# (e.g. "Data", "Group", "International") -- excluded when checking whether
+# a candidate domain plausibly belongs to the searched-for company, so a
+# search for "Magna Data" doesn't accept a domain just because it contains
+# the generic word "data" or "international".
+_GENERIC_COMPANY_WORDS = {
+    "the", "inc", "incorporated", "ltd", "llc", "corp", "corporation", "group",
+    "private", "limited", "pvt", "plc", "company", "co", "technologies",
+    "technology", "tech", "solutions", "solution", "services", "service",
+    "international", "global", "data", "systems", "system", "software",
+    "industries", "industry", "enterprises", "enterprise", "holdings",
+    "holding", "ventures", "labs", "lab", "associates", "consulting",
+    "consultants", "and", "of", "for",
+}
+
+
+def _company_core_tokens(name):
+    words = re.findall(r"[a-zA-Z0-9]+", (name or "").lower())
+    core = [w for w in words if w not in _GENERIC_COMPANY_WORDS and len(w) >= 3]
+    return core or words  # if every word was generic, fall back to all of them
+
+
+def _domain_matches_company(netloc, name):
+    """Loose check: does this domain plausibly belong to the searched-for
+    company? Guards against aggregator/profile pages that surface an
+    unrelated same-ish-named company (e.g. 'Magna International' showing
+    up for a search on 'Magna Data') being mistaken for the official site."""
+    host = netloc.lower()
+    tokens = _company_core_tokens(name)
+    return any(tok in host for tok in tokens)
 
 
 def _fetch_soup(url):
@@ -530,17 +570,29 @@ def web_company_search(company_name: str, search_hint: Optional[str] = None) -> 
         return f"No websites found for '{name}'."
 
     lines = [f"Top candidate websites for '{name}':"]
-    count = 0
+    verified, unverified = [], []
     for r in results:
         url = r.get("url", "")
-        if _is_non_official_host(urlparse(url).netloc):
+        netloc = urlparse(url).netloc
+        if _is_non_official_host(netloc):
             continue
+        entry = (r, url)
+        (verified if _domain_matches_company(netloc, name) else unverified).append(entry)
+    # Verified-domain candidates first -- crm_research_company and similar
+    # callers take the FIRST url in this text as "the" official site, so
+    # ordering here directly controls which company's data gets used.
+    ordered = verified + unverified
+    count = 0
+    for r, url in ordered:
         count += 1
-        lines.append(f"{count}. {r.get('title','')}\n   URL: {url}\n   {(r.get('content') or '').strip()[:150]}...")
+        flag = "" if (r, url) in verified else "  ⚠️ domain doesn't obviously match the company name -- verify before treating as official"
+        lines.append(f"{count}. {r.get('title','')}\n   URL: {url}\n   {(r.get('content') or '').strip()[:150]}...{flag}")
         if count >= 5:
             break
     if count == 0:
         return f"Only directory/social results found for '{name}'. Add an industry or city hint."
+    if not verified:
+        lines.insert(1, "⚠️ None of these domains obviously match the company name -- confirm with the user which (if any) is correct before extracting details.")
     lines.append("\nConfirm the correct URL with the user, then call `web_company_extract` on it.")
     return "\n".join(lines)
 

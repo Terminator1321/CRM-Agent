@@ -770,12 +770,18 @@ async def _execute_tool(
         return failure
     except Exception as e:
         logger.exception("Tool '%s' failed", tool_name)
-        failure = f"'{tool_name}' failed to fetch CRM data right now."
+        detail = str(e).strip()
+        # RuntimeError from crm_client._request() already includes Frappe's
+        # own message (e.g. "CRM request failed (417): Could not find
+        # Status: Open") -- surface that instead of a generic string so the
+        # agent (and the person) can actually see what went wrong and fix
+        # the input, rather than just knowing *that* something failed.
+        failure = f"'{tool_name}' failed: {detail}" if detail else f"'{tool_name}' failed to fetch CRM data right now."
         if session_id:
             audit_log.log_turn(
                 session_id, "tool", failure, tool_name=tool_name, tool_args=args,
                 user_id=user_id, prompt_text=prompt_text, tool_status="error",
-                error_message=str(e),
+                error_message=detail,
             )
         return failure
 
