@@ -21,6 +21,7 @@ here as it does in the FastAPI server.
 """
 
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableLambda
 
@@ -43,9 +44,18 @@ class VoiceAssistant:
         self._stt_model = whisper_model
         self._whisper = None
 
+        # Pass the system prompt as a literal SystemMessage rather than a
+        # ("system", text) template tuple. from_messages() f-string-parses
+        # template *strings* looking for {variable} placeholders, and the
+        # system prompt now contains literal JSON examples (e.g. {"type":
+        # "pie", ...}) for the chart-block instructions -- those curly
+        # braces would be misread as template variables and raise
+        # "Invalid format specifier ... Nested replacement fields are not
+        # allowed." A SystemMessage's content is used as-is, with no
+        # template parsing, so this sidesteps that entirely.
         self.prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", self.llm.system_prompt),
+                SystemMessage(content=self.llm.system_prompt),
                 ("human", "{input}"),
             ]
         )

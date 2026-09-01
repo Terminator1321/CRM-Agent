@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CRM Agent Eval — Results Ledger</title>
+<script>
+  // Load Chart.js with fallbacks across CDNs, since a single blocked/misversioned
+  // script tag would otherwise leave the pie/line charts silently blank.
+  window.chartJsReady = false;
+  function loadScript(src){
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src; s.onload = resolve; s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+  const chartJsSources = [
+    "https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js",
+    "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js",
+    "https://unpkg.com/chart.js@4.4.1/dist/chart.umd.min.js"
+  ];
+  (async function loadChartJs(){
+    for (const src of chartJsSources){
+      try { await loadScript(src); window.chartJsReady = true; break; }
+      catch(e) { /* try next source */ }
+    }
+    window.dispatchEvent(new Event('chartjs-ready-or-failed'));
+  })();
+</script>
+<style>
+  :root{
+    --ink-bg: #16201C;
+    --panel: #1D2924;
+    --panel-2: #22302A;
+    --line: rgba(237,234,225,0.10);
+    --line-strong: rgba(237,234,225,0.20);
+    --text: #EDEAE1;
+    --text-dim: #A9B2A9;
+    --gold: #D6A24B;
+    --pass: #5FA777;
+    --partial: #D6A24B;
+    --fail: #C85C4B;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--ink-bg); color:var(--text);
+    font-family:var(--sans); line-height:1.45;
+  }
+  header{
+    padding:28px 32px 20px; border-bottom:1px solid var(--line);
+    display:flex; flex-wrap:wrap; gap:20px; justify-content:space-between; align-items:flex-end;
+  }
+  .title-block h1{
+    font-size:22px; margin:0 0 4px; font-weight:600; letter-spacing:0.2px;
+  }
+  .title-block .sub{ color:var(--text-dim); font-size:13px; font-family:var(--mono); }
+  .file-controls{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .drop{
+    border:1px dashed var(--line-strong); border-radius:6px; padding:9px 14px;
+    font-size:12px; font-family:var(--mono); color:var(--text-dim); cursor:pointer;
+    transition:border-color .15s, color .15s; background:var(--panel);
+  }
+  .drop:hover{ border-color:var(--gold); color:var(--text); }
+  .drop.filled{ border-color:var(--pass); color:var(--pass); }
+  input[type=file]{ display:none; }
+  button.demo{
+    background:transparent; border:1px solid var(--line-strong); color:var(--text-dim);
+    border-radius:6px; padding:9px 14px; font-family:var(--mono); font-size:12px; cursor:pointer;
+  }
+  button.demo:hover{ color:var(--gold); border-color:var(--gold); }
+
+  main{ padding:24px 32px 60px; max-width:1360px; margin:0 auto; }
+
+  .run-row{
+    display:flex; align-items:center; gap:14px; margin-bottom:22px; flex-wrap:wrap;
+  }
+  .run-row label{ font-family:var(--mono); font-size:12px; color:var(--text-dim); }
+  select{
+    background:var(--panel); color:var(--text); border:1px solid var(--line-strong);
+    border-radius:6px; padding:8px 12px; font-family:var(--mono); font-size:13px;
+  }
+  .empty-note{
+    font-family:var(--mono); font-size:13px; color:var(--text-dim);
+    border:1px solid var(--line); border-radius:8px; padding:18px 20px; background:var(--panel);
+  }
+
+  .stats{
+    display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:22px;
+  }
+  .stat{
+    background:var(--panel); border:1px solid var(--line); border-radius:8px;
+    padding:14px 16px;
+  }
+  .stat .num{ font-family:var(--mono); font-size:24px; font-weight:600; }
+  .stat .lbl{ font-size:11px; color:var(--text-dim); margin-top:2px; text-transform:lowercase; }
+  .stat.pass .num{ color:var(--pass); }
+  .stat.partial .num{ color:var(--partial); }
+  .stat.fail .num{ color:var(--fail); }
+
+  .charts{
+    display:grid; grid-template-columns: 1fr 1.4fr; gap:16px; margin-bottom:16px;
+  }
+  .panel{
+    background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px 18px;
+  }
+  .panel h2{
+    font-size:13px; font-weight:600; margin:0 0 12px; color:var(--text);
+    font-family:var(--mono); text-transform:none;
+  }
+  .panel h2 .hint{ color:var(--text-dim); font-weight:400; }
+  .chart-wrap{ position:relative; height:240px; }
+  .chart-wrap.tall{ height:280px; }
+  .full{ grid-column:1 / -1; }
+
+  .filters{
+    display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:26px 0 14px;
+  }
+  .filters input[type=text]{
+    background:var(--panel); color:var(--text); border:1px solid var(--line-strong);
+    border-radius:6px; padding:8px 12px; font-family:var(--mono); font-size:13px; flex:1; min-width:220px;
+  }
+  .filters select{ min-width:140px; }
+  .count-note{ font-family:var(--mono); font-size:12px; color:var(--text-dim); margin-left:auto; }
+
+  .qa-list{ display:flex; flex-direction:column; gap:8px; }
+  .qa-item{
+    background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden;
+  }
+  .qa-head{
+    display:flex; gap:12px; align-items:center; padding:12px 16px; cursor:pointer;
+  }
+  .qa-id{ font-family:var(--mono); font-size:11px; color:var(--text-dim); width:34px; flex:none; }
+  .qa-cat{
+    font-family:var(--mono); font-size:10px; color:var(--text-dim); border:1px solid var(--line-strong);
+    border-radius:4px; padding:2px 6px; flex:none; white-space:nowrap;
+  }
+  .qa-q{ font-size:13.5px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .badge{
+    font-family:var(--mono); font-size:11px; border-radius:4px; padding:3px 8px; flex:none; font-weight:600;
+  }
+  .badge.pass{ background:rgba(95,167,119,0.15); color:var(--pass); }
+  .badge.partial{ background:rgba(214,162,75,0.15); color:var(--partial); }
+  .badge.fail{ background:rgba(200,92,75,0.15); color:var(--fail); }
+  .badge.none{ background:rgba(255,255,255,0.05); color:var(--text-dim); }
+  .qa-score{ font-family:var(--mono); font-size:12px; color:var(--text-dim); width:34px; text-align:right; flex:none; }
+  .chev{ color:var(--text-dim); flex:none; width:14px; text-align:center; transition:transform .15s; }
+  .qa-item.open .chev{ transform:rotate(90deg); }
+
+  .qa-body{ display:none; padding:0 16px 18px 62px; border-top:1px solid var(--line); }
+  .qa-item.open .qa-body{ display:block; padding-top:14px; }
+  .qa-section{ margin-bottom:12px; }
+  .qa-section .k{
+    font-family:var(--mono); font-size:10px; color:var(--gold); text-transform:uppercase;
+    letter-spacing:0.06em; margin-bottom:4px;
+  }
+  .qa-section .v{ font-size:13.5px; white-space:pre-wrap; }
+  .qa-section .v.mono{ font-family:var(--mono); font-size:12.5px; color:var(--text-dim); }
+  .qa-missing{ font-family:var(--mono); font-size:12px; color:var(--text-dim); font-style:italic; }
+
+  footer{ text-align:center; padding:20px; color:var(--text-dim); font-family:var(--mono); font-size:11px; }
+
+  @media (max-width: 900px){
+    .stats{ grid-template-columns:repeat(2,1fr); }
+    .charts{ grid-template-columns:1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title-block">
+    <h1>CRM Agent Eval — Results Ledger</h1>
+    <div class="sub">questions.csv → results.csv → runs/&lt;run&gt;.jsonl</div>
+  </div>
+  <div class="file-controls">
+    <label class="drop" id="dropResults">
+      + results.csv
+      <input type="file" id="fileResults" accept=".csv">
+    </label>
+    <label class="drop" id="dropRuns">
+      + runs/*.jsonl (multi)
+      <input type="file" id="fileRuns" accept=".jsonl,.json" multiple>
+    </label>
+    <label class="drop" id="dropQuestions">
+      + questions.csv (rubric, optional)
+      <input type="file" id="fileQuestions" accept=".csv">
+    </label>
+    <button class="demo" id="demoBtn">load demo data</button>
+  </div>
+</header>
+
+<main>
+
+  <div id="emptyState" class="empty-note">
+    No data loaded yet. Load <code>results.csv</code> from the eval run (and optionally the matching <code>runs/&lt;run&gt;.jsonl</code> files
+    to see the full generated answers), or click <strong>load demo data</strong> above to preview the dashboard with sample results.
+  </div>
+
+  <div id="dashboard" style="display:none;">
+
+    <div class="run-row">
+      <label for="runSelect">viewing run</label>
+      <select id="runSelect"></select>
+      <span class="count-note" id="runMeta"></span>
+    </div>
+
+    <div class="stats" id="stats"></div>
+
+    <div class="charts">
+      <div class="panel">
+        <h2>Verdict breakdown <span class="hint">— selected run</span></h2>
+        <div class="chart-wrap"><canvas id="pieChart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h2>Avg score by category <span class="hint">— across all runs</span></h2>
+        <div class="chart-wrap"><canvas id="categoryLineChart"></canvas></div>
+      </div>
+      <div class="panel full">
+        <h2>Overall agent trend <span class="hint">— average score across all runs, is it improving?</span></h2>
+        <div class="chart-wrap tall"><canvas id="overallLineChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="filters">
+      <input type="text" id="searchBox" placeholder="search question or id…">
+      <select id="categoryFilter"><option value="">all categories</option></select>
+      <select id="verdictFilter">
+        <option value="">all verdicts</option>
+        <option value="pass">pass</option>
+        <option value="partial">partial</option>
+        <option value="fail">fail</option>
+      </select>
+      <span class="count-note" id="qaCount"></span>
+    </div>
+
+    <div class="qa-list" id="qaList"></div>
+  </div>
+
+</main>
+
+<footer>rendered client-side — nothing here leaves your browser</footer>
+
+<script>
+// ---------------------------------------------------------------------
+// state
+// ---------------------------------------------------------------------
+let results = [];          // [{id, category, question, runs:{runName:{score,verdict}}}]
+let runOrder = [];         // ["test1","test2",...] in results.csv column order
+let jsonlData = {};        // {runName: {id: {reply, reasoning, agent_error, timestamp}}}
+let rubricData = {};       // {id: rubric}
+let selectedRun = null;
+let pieChart = null, catLineChart = null, overallLineChart = null;
+
+// ---------------------------------------------------------------------
+// CSV parsing (handles quoted fields with commas/newlines)
+// ---------------------------------------------------------------------
+function parseCSV(text){
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for (let i = 0; i < text.length; i++){
+    const c = text[i];
+    if (inQuotes){
+      if (c === '"'){
+        if (text[i+1] === '"'){ field += '"'; i++; }
+        else inQuotes = false;
+      } else field += c;
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ','){ row.push(field); field=''; }
+      else if (c === '\n'){ row.push(field); rows.push(row); row=[]; field=''; }
+      else if (c === '\r'){ /* skip */ }
+      else field += c;
+    }
+  }
+  if (field.length > 0 || row.length > 0){ row.push(field); rows.push(row); }
+  return rows.filter(r => r.length > 1 || (r.length===1 && r[0] !== ''));
+}
+
+function cellToScoreVerdict(cell){
+  if (!cell) return null;
+  const m = cell.trim().match(/^(\d+)\s*\(([a-z]+)\)$/i);
+  if (!m) return null;
+  return { score: parseInt(m[1],10), verdict: m[2].toLowerCase() };
+}
+
+function loadResultsCSV(text){
+  const rows = parseCSV(text);
+  if (!rows.length) return;
+  const header = rows[0];
+  const idIdx = header.indexOf('id'), catIdx = header.indexOf('category'), qIdx = header.indexOf('question');
+  const testCols = header.map((h,i)=>({h,i})).filter(x => x.i !== idIdx && x.i !== catIdx && x.i !== qIdx);
+  runOrder = testCols.map(x => x.h);
+
+  results = [];
+  for (let r = 1; r < rows.length; r++){
+    const row = rows[r];
+    if (!row || row[idIdx] === undefined) continue;
+    const item = {
+      id: row[idIdx],
+      category: row[catIdx] || 'uncategorized',
+      question: row[qIdx] || '',
+      runs: {}
+    };
+    testCols.forEach(({h,i}) => {
+      const parsed = cellToScoreVerdict(row[i]);
+      if (parsed) item.runs[h] = parsed;
+    });
+    results.push(item);
+  }
+}
+
+function loadQuestionsCSV(text){
+  const rows = parseCSV(text);
+  if (!rows.length) return;
+  const header = rows[0];
+  const idIdx = header.indexOf('id'), rubricIdx = header.indexOf('rubric');
+  if (rubricIdx === -1) return;
+  rubricData = {};
+  for (let r = 1; r < rows.length; r++){
+    const row = rows[r];
+    if (!row || row[idIdx] === undefined) continue;
+    rubricData[row[idIdx]] = row[rubricIdx] || '';
+  }
+}
+
+function loadJSONL(name, text){
+  const runName = name.replace(/\.(jsonl|json)$/i, '');
+  const map = {};
+  text.split('\n').forEach(line => {
+    line = line.trim();
+    if (!line) return;
+    try {
+      const obj = JSON.parse(line);
+      if (obj.id !== undefined) map[obj.id] = obj;
+    } catch(e) { /* skip malformed line */ }
+  });
+  jsonlData[runName] = map;
+  if (runOrder.length && !runOrder.includes(runName)) runOrder.push(runName);
+}
+
+// ---------------------------------------------------------------------
+// file input wiring
+// ---------------------------------------------------------------------
+function markFilled(dropId){ document.getElementById(dropId).classList.add('filled'); }
+
+document.getElementById('fileResults').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  f.text().then(text => { loadResultsCSV(text); markFilled('dropResults'); render(); });
+});
+document.getElementById('fileQuestions').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  f.text().then(text => { loadQuestionsCSV(text); markFilled('dropQuestions'); render(); });
+});
+document.getElementById('fileRuns').addEventListener('change', e => {
+  const files = Array.from(e.target.files); if (!files.length) return;
+  Promise.all(files.map(f => f.text().then(text => loadJSONL(f.name, text))))
+    .then(() => { markFilled('dropRuns'); render(); });
+});
+
+// ---------------------------------------------------------------------
+// demo data
+// ---------------------------------------------------------------------
+function loadDemoData(){
+  const categories = ['crm_search','crm_get','crm_create','crm_update','crm_delete',
+                       'crm_linked_records','crm_activities','crm_contact_action',
+                       'crm_research_company','multi_step'];
+  runOrder = ['test1','test2','test3'];
+  results = [];
+  jsonlData = { test1:{}, test2:{}, test3:{} };
+  let id = 1;
+  const sampleQ = {
+    crm_search: "Show me all leads with status 'Open'.",
+    crm_get: "Pull up the details for deal #4021.",
+    crm_create: "Create a new lead for Priya Shah at Northwind Traders.",
+    crm_update: "Change the stage of the Acme Corp deal to 'Negotiation'.",
+    crm_delete: "Delete the contact record for John Carter.",
+    crm_linked_records: "What deals are linked to the Globex account?",
+    crm_activities: "Log a call activity with the Meridian Health lead.",
+    crm_contact_action: "Send a follow-up email to the contact on deal #390.",
+    crm_research_company: "Give me a quick background on Vertex Dynamics.",
+    multi_step: "Find open deals over $50k and update their owner to Dana."
+  };
+  const sampleReply = {
+    crm_search: "Found 14 leads with status 'Open': Priya Shah (Northwind), ...",
+    crm_get: "Deal #4021 — Acme Renewal, stage: Proposal, value: $18,400, owner: Dana Kim.",
+    crm_create: "Created lead 'Priya Shah' at Northwind Traders, status set to New.",
+    crm_update: "Updated the Acme Corp deal — stage moved from Proposal to Negotiation.",
+    crm_delete: "This will permanently delete John Carter's contact record — confirm before I proceed?",
+    crm_linked_records: "Globex account has 3 linked deals: Renewal Q3, Upsell Pilot, Support Contract.",
+    crm_activities: "Logged a call activity on the Meridian Health lead, dated today.",
+    crm_contact_action: "Sent a follow-up email to the primary contact on deal #390.",
+    crm_research_company: "Vertex Dynamics — mid-size industrial automation firm, ~200 employees.",
+    multi_step: "Found 6 open deals over $50k and reassigned owner to Dana on all of them."
+  };
+  categories.forEach(cat => {
+    const n = cat === 'multi_step' ? 4 : 8;
+    for (let k=0;k<n;k++){
+      const item = { id: String(id), category: cat, question: sampleQ[cat] + ` (#${k+1})`, runs:{} };
+      runOrder.forEach((run, ri) => {
+        // simulate gradual improvement across runs, with noise, occasional fail
+        const base = 55 + ri*14 + (Math.random()*20 - 10);
+        const score = Math.max(0, Math.min(100, Math.round(base)));
+        const verdict = score >= 70 ? 'pass' : score >= 40 ? 'partial' : 'fail';
+        item.runs[run] = { score, verdict };
+        jsonlData[run][item.id] = {
+          reply: sampleReply[cat],
+          reasoning: verdict === 'pass'
+            ? "Took the correct tool action and did not fabricate any record details."
+            : verdict === 'partial'
+              ? "Right approach but missed confirming a destructive/ambiguous detail from the rubric."
+              : "Wrong tool action taken or response fabricated specifics not grounded in the request.",
+          agent_error: null,
+          timestamp: new Date(Date.now() - (runOrder.length-ri)*86400000).toISOString()
+        };
+      });
+      rubricData[item.id] = "Correct tool call for the request; no fabricated record details; concise, relevant reply.";
+      results.push(item);
+      id++;
+    }
+  });
+  markFilled('dropResults'); markFilled('dropRuns'); markFilled('dropQuestions');
+  render();
+}
+document.getElementById('demoBtn').addEventListener('click', loadDemoData);
+
+// re-render charts once Chart.js finishes loading (it loads async in the background,
+// and may resolve after the person has already loaded data / clicked demo)
+window.addEventListener('chartjs-ready-or-failed', () => {
+  if (results.length) renderRunDependent();
+});
+
+// ---------------------------------------------------------------------
+// rendering
+// ---------------------------------------------------------------------
+function render(){
+  if (!results.length){ return; }
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('dashboard').style.display = 'block';
+
+  // run dropdown
+  const runSelect = document.getElementById('runSelect');
+  const prevSelected = selectedRun;
+  runSelect.innerHTML = '';
+  runOrder.forEach(r => {
+    const opt = document.createElement('option');
+    opt.value = r; opt.textContent = r;
+    runSelect.appendChild(opt);
+  });
+  selectedRun = runOrder.includes(prevSelected) ? prevSelected : runOrder[runOrder.length-1];
+  runSelect.value = selectedRun;
+  runSelect.onchange = () => { selectedRun = runSelect.value; renderRunDependent(); };
+
+  // category filter options
+  const catFilter = document.getElementById('categoryFilter');
+  const cats = [...new Set(results.map(r => r.category))].sort();
+  const prevCat = catFilter.value;
+  catFilter.innerHTML = '<option value="">all categories</option>' +
+    cats.map(c => `<option value="${c}">${c}</option>`).join('');
+  catFilter.value = cats.includes(prevCat) ? prevCat : '';
+  catFilter.onchange = renderQAList;
+  document.getElementById('verdictFilter').onchange = renderQAList;
+  document.getElementById('searchBox').oninput = renderQAList;
+
+  renderRunDependent();
+}
+
+function renderRunDependent(){
+  const hasJsonl = !!jsonlData[selectedRun];
+  document.getElementById('runMeta').textContent =
+    hasJsonl ? 'full generated answers loaded for this run' : 'load runs/' + selectedRun + '.jsonl to see full generated answers';
+  renderStats();
+  renderPieChart();
+  renderCategoryLineChart();
+  renderOverallLineChart();
+  renderQAList();
+}
+
+function renderStats(){
+  const rows = results.filter(r => r.runs[selectedRun]);
+  const scores = rows.map(r => r.runs[selectedRun].score);
+  const verdicts = rows.map(r => r.runs[selectedRun].verdict);
+  const avg = scores.length ? (scores.reduce((a,b)=>a+b,0)/scores.length) : 0;
+  const passN = verdicts.filter(v=>v==='pass').length;
+  const partialN = verdicts.filter(v=>v==='partial').length;
+  const failN = verdicts.filter(v=>v==='fail').length;
+
+  const stats = [
+    { num: rows.length, lbl: 'questions graded', cls:'' },
+    { num: avg.toFixed(1), lbl: 'avg score', cls:'' },
+    { num: passN, lbl: 'pass', cls:'pass' },
+    { num: partialN, lbl: 'partial', cls:'partial' },
+    { num: failN, lbl: 'fail', cls:'fail' },
+  ];
+  document.getElementById('stats').innerHTML = stats.map(s =>
+    `<div class="stat ${s.cls}"><div class="num">${s.num}</div><div class="lbl">${s.lbl}</div></div>`
+  ).join('');
+}
+
+function chartUnavailable(canvasId){
+  const canvas = document.getElementById(canvasId);
+  const wrap = canvas.parentElement;
+  if (wrap.querySelector('.chart-fallback')) return true;
+  if (typeof Chart !== 'undefined') return false;
+  canvas.style.display = 'none';
+  const msg = document.createElement('div');
+  msg.className = 'chart-fallback';
+  msg.style.cssText = 'font-family:var(--mono);font-size:12px;color:var(--text-dim);padding:12px 0;';
+  msg.textContent = 'Chart library did not load (no internet access from this file?). Stats above are still accurate.';
+  wrap.appendChild(msg);
+  return true;
+}
+
+function renderPieChart(){
+  if (chartUnavailable('pieChart')) return;
+  const rows = results.filter(r => r.runs[selectedRun]);
+  const verdicts = rows.map(r => r.runs[selectedRun].verdict);
+  const passN = verdicts.filter(v=>v==='pass').length;
+  const partialN = verdicts.filter(v=>v==='partial').length;
+  const failN = verdicts.filter(v=>v==='fail').length;
+
+  const ctx = document.getElementById('pieChart').getContext('2d');
+  if (pieChart) pieChart.destroy();
+  pieChart = new Chart(ctx, {
+    type: 'pie',
+    data: {
+      labels: ['pass','partial','fail'],
+      datasets: [{
+        data: [passN, partialN, failN],
+        backgroundColor: ['#5FA777','#D6A24B','#C85C4B'],
+        borderColor: '#1D2924',
+        borderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { color: '#EDEAE1', font:{family:'monospace', size:11} } },
+        tooltip: { callbacks: { label: (c) => `${c.label}: ${c.raw} (${((c.raw/(passN+partialN+failN||1))*100).toFixed(0)}%)` } }
+      }
+    }
+  });
+}
+
+function renderCategoryLineChart(){
+  if (chartUnavailable('categoryLineChart')) return;
+  const cats = [...new Set(results.map(r => r.category))].sort();
+  const palette = ['#D6A24B','#5FA777','#7FA8C9','#C85C4B','#B08BC9','#E0C36A','#6FBFB0','#D18BA5','#8FA6D6','#A6C97F'];
+
+  const datasets = cats.map((cat, i) => {
+    const data = runOrder.map(run => {
+      const scores = results.filter(r => r.category === cat && r.runs[run]).map(r => r.runs[run].score);
+      return scores.length ? +(scores.reduce((a,b)=>a+b,0)/scores.length).toFixed(1) : null;
+    });
+    return {
+      label: cat, data,
+      borderColor: palette[i % palette.length],
+      backgroundColor: palette[i % palette.length],
+      spanGaps: true, tension: 0.25, pointRadius: 3, borderWidth: 2
+    };
+  });
+
+  const ctx = document.getElementById('categoryLineChart').getContext('2d');
+  if (catLineChart) catLineChart.destroy();
+  catLineChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: runOrder, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        y: { min:0, max:100, ticks:{ color:'#A9B2A9', font:{family:'monospace', size:10} }, grid:{ color:'rgba(237,234,225,0.06)' } },
+        x: { ticks:{ color:'#A9B2A9', font:{family:'monospace', size:10} }, grid:{ display:false } }
+      },
+      plugins: {
+        legend: { position:'bottom', labels:{ color:'#A9B2A9', font:{family:'monospace', size:9}, boxWidth:10 } }
+      }
+    }
+  });
+}
+
+function renderOverallLineChart(){
+  if (chartUnavailable('overallLineChart')) return;
+  const data = runOrder.map(run => {
+    const scores = results.filter(r => r.runs[run]).map(r => r.runs[run].score);
+    return scores.length ? +(scores.reduce((a,b)=>a+b,0)/scores.length).toFixed(1) : null;
+  });
+  const passRate = runOrder.map(run => {
+    const rows = results.filter(r => r.runs[run]);
+    if (!rows.length) return null;
+    const passN = rows.filter(r => r.runs[run].verdict === 'pass').length;
+    return +((passN/rows.length)*100).toFixed(1);
+  });
+
+  const ctx = document.getElementById('overallLineChart').getContext('2d');
+  if (overallLineChart) overallLineChart.destroy();
+  overallLineChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: runOrder,
+      datasets: [
+        {
+          label: 'avg score', data, spanGaps: true,
+          borderColor: '#D6A24B', backgroundColor: 'rgba(214,162,75,0.12)',
+          fill: true, tension: 0.25, pointRadius: 4, borderWidth: 2.5, yAxisID: 'y'
+        },
+        {
+          label: 'pass rate %', data: passRate, spanGaps: true,
+          borderColor: '#5FA777', borderDash: [4,3],
+          fill: false, tension: 0.25, pointRadius: 3, borderWidth: 2, yAxisID: 'y'
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        y: { min:0, max:100, ticks:{ color:'#A9B2A9', font:{family:'monospace', size:10} }, grid:{ color:'rgba(237,234,225,0.06)' } },
+        x: { ticks:{ color:'#A9B2A9', font:{family:'monospace', size:10} }, grid:{ display:false } }
+      },
+      plugins: {
+        legend: { position:'bottom', labels:{ color:'#A9B2A9', font:{family:'monospace', size:10} } }
+      }
+    }
+  });
+}
+
+function renderQAList(){
+  const search = document.getElementById('searchBox').value.trim().toLowerCase();
+  const catFilterVal = document.getElementById('categoryFilter').value;
+  const verdictFilterVal = document.getElementById('verdictFilter').value;
+
+  let rows = results.slice();
+  if (catFilterVal) rows = rows.filter(r => r.category === catFilterVal);
+  if (search) rows = rows.filter(r => r.id.includes(search) || r.question.toLowerCase().includes(search));
+  if (verdictFilterVal) rows = rows.filter(r => r.runs[selectedRun] && r.runs[selectedRun].verdict === verdictFilterVal);
+
+  document.getElementById('qaCount').textContent = `${rows.length} of ${results.length} questions`;
+
+  const list = document.getElementById('qaList');
+  list.innerHTML = '';
+  rows.forEach(r => {
+    const rv = r.runs[selectedRun];
+    const jd = jsonlData[selectedRun] ? jsonlData[selectedRun][r.id] : null;
+    const rubric = rubricData[r.id];
+
+    const item = document.createElement('div');
+    item.className = 'qa-item';
+
+    const badgeCls = rv ? rv.verdict : 'none';
+    const badgeText = rv ? rv.verdict : 'n/a';
+    const scoreText = rv ? rv.score : '—';
+
+    item.innerHTML = `
+      <div class="qa-head">
+        <span class="chev">›</span>
+        <span class="qa-id">#${r.id}</span>
+        <span class="qa-cat">${r.category}</span>
+        <span class="qa-q">${escapeHtml(r.question)}</span>
+        <span class="qa-score">${scoreText}</span>
+        <span class="badge ${badgeCls}">${badgeText}</span>
+      </div>
+      <div class="qa-body">
+        <div class="qa-section">
+          <div class="k">Question</div>
+          <div class="v">${escapeHtml(r.question)}</div>
+        </div>
+        ${rubric ? `<div class="qa-section"><div class="k">Rubric</div><div class="v mono">${escapeHtml(rubric)}</div></div>` : ''}
+        <div class="qa-section">
+          <div class="k">Generated answer (${selectedRun})</div>
+          ${jd
+            ? `<div class="v">${escapeHtml(jd.reply || '(empty reply)')}</div>`
+            : `<div class="qa-missing">Not loaded — add runs/${selectedRun}.jsonl to see the agent's full generated answer here.</div>`}
+        </div>
+        ${jd && jd.agent_error ? `<div class="qa-section"><div class="k">Agent error</div><div class="v mono">${escapeHtml(jd.agent_error)}</div></div>` : ''}
+        ${jd && jd.reasoning ? `<div class="qa-section"><div class="k">Judge reasoning</div><div class="v mono">${escapeHtml(jd.reasoning)}</div></div>` : ''}
+        ${jd && jd.timestamp ? `<div class="qa-section"><div class="k">Run timestamp</div><div class="v mono">${escapeHtml(jd.timestamp)}</div></div>` : ''}
+      </div>
+    `;
+    item.querySelector('.qa-head').addEventListener('click', () => item.classList.toggle('open'));
+    list.appendChild(item);
+  });
+}
+
+function escapeHtml(str){
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+</script>
+</body>
+</html>

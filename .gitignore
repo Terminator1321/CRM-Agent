@@ -5,3 +5,5 @@ CRM_Unified/models
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+eval/runs/
+eval/results.csv
