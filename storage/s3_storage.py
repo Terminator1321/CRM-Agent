@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -38,7 +38,31 @@ logger = logging.getLogger("s3-storage")
 AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 
+# Falls back to saving uploads on the server's own disk whenever S3 isn't
+# configured (or a configured bucket can't be reached) -- so uploads still
+# work end-to-end without AWS credentials, at the cost of not being durable
+# across redeploys. Set S3_BUCKET_NAME + AWS credentials in .env to switch
+# back to S3 with no other code changes.
+LOCAL_STORAGE_DIR = os.getenv("LOCAL_STORAGE_DIR", "local_uploads")
+
 _s3_client = None
+_warned_local_fallback = False
+
+
+def _s3_configured() -> bool:
+    return bool(S3_BUCKET_NAME)
+
+
+def _warn_local_fallback_once(reason: str):
+    global _warned_local_fallback
+    if not _warned_local_fallback:
+        logger.warning(
+            "S3 is not available (%s) -- falling back to storing uploaded "
+            "files locally on the server at '%s'. Set S3_BUCKET_NAME + AWS "
+            "credentials in .env for durable, off-server storage.",
+            reason, os.path.abspath(LOCAL_STORAGE_DIR),
+        )
+        _warned_local_fallback = True
 
 
 def _client():
@@ -78,6 +102,38 @@ def _build_key(upload_kind: str, session_id: Optional[str], filename: str) -> st
     )
 
 
+def _local_upload_file(
+    file_bytes: bytes,
+    original_filename: str,
+    content_type: str,
+    upload_kind: str,
+    session_id: Optional[str],
+    user_id: Optional[str],
+    checksum: str,
+    key: str,
+) -> dict:
+    """Writes file_bytes under LOCAL_STORAGE_DIR/key, mirroring the same
+    metadata shape upload_file() returns for S3, so callers and the
+    file_uploads table don't need to know which backend was used."""
+    local_path = os.path.join(LOCAL_STORAGE_DIR, key)
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    with open(local_path, "wb") as f:
+        f.write(file_bytes)
+
+    return {
+        "session_id": session_id,
+        "user_id": user_id,
+        "original_filename": original_filename,
+        "content_type": content_type,
+        "file_size_bytes": len(file_bytes),
+        "checksum_sha256": checksum,
+        "upload_kind": upload_kind,
+        "s3_bucket": "local-disk",
+        "s3_key": key,
+        "s3_region": "local",
+    }
+
+
 def upload_file(
     file_bytes: bytes,
     original_filename: str,
@@ -89,11 +145,16 @@ def upload_file(
     """Uploads `file_bytes` to S3 and returns metadata ready to hand to
     db.postgres_audit_log.record_file_upload(**metadata, extracted_metadata=...).
 
-    Raises botocore.exceptions.ClientError on failure -- callers should
-    catch this and turn it into an HTTP 500, same as other upload errors.
+    Falls back to local disk storage (with a one-time warning) whenever S3
+    isn't configured or a configured bucket can't be reached, instead of
+    failing the upload outright.
     """
     checksum = hashlib.sha256(file_bytes).hexdigest()
     key = _build_key(upload_kind, session_id, original_filename)
+
+    if not _s3_configured():
+        _warn_local_fallback_once("S3_BUCKET_NAME is not set")
+        return _local_upload_file(file_bytes, original_filename, content_type, upload_kind, session_id, user_id, checksum, key)
 
     tags = {
         "uploaded-by": user_id or "anonymous",
@@ -116,9 +177,10 @@ def upload_file(
                 "sha256": checksum,
             },
         )
-    except ClientError:
-        logger.exception("S3 upload failed for key '%s'", key)
-        raise
+    except (ClientError, NoCredentialsError, EndpointConnectionError) as exc:
+        logger.exception("S3 upload failed for key '%s'; falling back to local disk", key)
+        _warn_local_fallback_once(f"upload failed: {exc}")
+        return _local_upload_file(file_bytes, original_filename, content_type, upload_kind, session_id, user_id, checksum, key)
 
     return {
         "session_id": session_id,
@@ -134,10 +196,15 @@ def upload_file(
     }
 
 
-def get_presigned_url(s3_key: str, expires_in: int = 3600) -> str:
+def get_presigned_url(s3_key: str, expires_in: int = 3600, s3_bucket: Optional[str] = None) -> str:
     """Read-only presigned URL for pulling a stored file back up (e.g. an
     audit dashboard 'view original document' button). Never make the
-    bucket itself public -- presigned URLs are the correct access path."""
+    bucket itself public -- presigned URLs are the correct access path.
+
+    For a file stored via the local-disk fallback (s3_bucket == 'local-disk'),
+    returns its local file path instead, since there's no S3 object to sign."""
+    if s3_bucket == "local-disk" or not _s3_configured():
+        return os.path.abspath(os.path.join(LOCAL_STORAGE_DIR, s3_key))
     return _client().generate_presigned_url(
         "get_object",
         Params={"Bucket": S3_BUCKET_NAME, "Key": s3_key},

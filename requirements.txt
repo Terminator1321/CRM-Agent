@@ -9,6 +9,10 @@ python-dotenv
 tavily-python>=0.7.0
 # LLM/LLM.py imports fitz for PDF OCR/rendering.
 PyMuPDF
+# LLM/document_reader.py: direct-text-read path for non-image/PDF uploads
+# (.docx / .xlsx / .xlsm) -- no OCR call needed for these, just parsing.
+python-docx
+openpyxl
 
 mcp>=1.0.0
 fastmcp
