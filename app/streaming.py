@@ -143,6 +143,42 @@ async def _stream_full_reply(call_messages, tools=None):
     yield {"type": "done", "content": content, "tool_calls": tool_calls}
 
 
+def build_document_context_note(session_id):
+    """Returns the system-prompt note for the session's uploaded document
+    (if any), or None. Called fresh on EVERY turn from wherever the system
+    prompt is assembled -- never stashed as a one-off message in message
+    history, so it can never be trimmed out of context or forgotten as a
+    conversation grows. The document stays available for as long as
+    state.document_store holds it (i.e. until the user uploads a
+    different file for this session)."""
+    doc = state.document_store.get(session_id) if session_id else None
+    if not doc:
+        return None
+    return (
+        f"\n[System note: the user has an uploaded document named "
+        f"'{doc['filename']}' available for this entire conversation. Its "
+        f"full extracted content is below. Use it to answer any questions "
+        f"they ask about it, now or later in this conversation. Also treat "
+        f"it as a possible source of CRM record data: if the user's message "
+        f"(or the document's own content) asks you to create or update a "
+        f"Lead, Deal, Organization, or Contact, pull the relevant fields "
+        f"out of this text yourself and proceed via crm_create/crm_update "
+        f"exactly as you would for any other request -- run "
+        f"crm_research_company first if it names a company, show what you "
+        f"found for confirmation, then create. If a Deal or other record "
+        f"refers to an Organization (or other linked record) that doesn't "
+        f"exist yet, this follows the same missing-dependency flow "
+        f"described earlier: crm_create will come back with "
+        f"invalid_link_fields/creatable=true, so ask the user to confirm "
+        f"creating that Organization first, create it once they confirm, "
+        f"then retry the original create with the same value -- never "
+        f"invent data that isn't actually present in the document or the "
+        f"conversation. If required fields are missing from the document, "
+        f"ask the user for them instead of guessing.]"
+        f"\n\n{doc['text'][:40000]}"
+    )
+
+
 async def stream_agent_turn(text, session_id=None, user_id=None, history=None, task_context=None):
     """Streaming twin of general_node/generate_reply for the realtime voice WS
     path. Keeps its own caller-owned history list instead of the LangGraph
@@ -170,28 +206,9 @@ async def stream_agent_turn(text, session_id=None, user_id=None, history=None, t
     if task_context:
         system_parts.append(f"\nCurrent task in progress: {task_context}.")
 
-    doc = state.document_store.get(session_id)
-    if doc and not doc["injected"]:
-        system_parts.append(
-            f"\n[System note: the user uploaded a document named '{doc['filename']}'. "
-            f"Its full extracted content is below. Use it to answer any questions they "
-            f"ask about it. Also treat it as a possible source of CRM record data: if "
-            f"the user's message (or the document's own content) asks you to create or "
-            f"update a Lead, Deal, Organization, or Contact, pull the relevant fields "
-            f"out of this text yourself and proceed via crm_create/crm_update exactly "
-            f"as you would for any other request -- run crm_research_company first if "
-            f"it names a company, show what you found for confirmation, then create. "
-            f"If a Deal or other record refers to an Organization (or other linked "
-            f"record) that doesn't exist yet, this follows the same missing-dependency "
-            f"flow described earlier: crm_create will come back with "
-            f"invalid_link_fields/creatable=true, so ask the user to confirm creating "
-            f"that Organization first, create it once they confirm, then retry the "
-            f"original create with the same value -- never invent data that isn't "
-            f"actually present in the document or the conversation. If required fields "
-            f"are missing from the document, ask the user for them instead of guessing.]"
-            f"\n\n{doc['text'][:40000]}"
-        )
-        doc["injected"] = True
+    doc_note = build_document_context_note(session_id)
+    if doc_note:
+        system_parts.append(doc_note)
 
     call_messages = [SystemMessage(content="\n".join(system_parts)), *trimmed]
 

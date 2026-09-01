@@ -14,7 +14,7 @@ from .. import agent_setup, config, state, tool_exec
 from ..history import approx_tokens
 from ..llm_model import OpenAIChatModel
 from ..logging_setup import logger
-from ..streaming import extract_fake_tool_call
+from ..streaming import build_document_context_note, extract_fake_tool_call
 from .chat_state import ChatState, CLASSIFY_SYSTEM, last_human_message, parse_json_loose
 
 
@@ -258,6 +258,10 @@ async def general_node(state_in: ChatState) -> dict:
     if task_context:
         system_parts.append(f"\nCurrent task in progress: {task_context}.")
 
+    doc_note = build_document_context_note(state_in.get("session_id"))
+    if doc_note:
+        system_parts.append(doc_note)
+
     call_messages = [SystemMessage(content="\n".join(system_parts)), *history]
 
     response = llm_with_tools.invoke(call_messages)
@@ -403,31 +407,6 @@ async def generate_reply(text: str, session_id: str = "default", user_id: Option
     audit_log.log_turn(session_id, "user", text, user_id=user_id, prompt_text=text)
 
     initial_messages = [HumanMessage(content=text)]
-
-    doc = state.document_store.get(session_id)
-    if doc and not doc["injected"]:
-        doc_context = (
-            f"[System note: the user uploaded a document named "
-            f"'{doc['filename']}'. Its full extracted content is below. "
-            f"Use it to answer any questions they ask about it. Also treat it as a "
-            f"possible source of CRM record data: if the user's message (or the "
-            f"document's own content) asks you to create or update a Lead, Deal, "
-            f"Organization, or Contact, pull the relevant fields out of this text "
-            f"yourself and proceed via crm_create/crm_update exactly as you would "
-            f"for any other request -- run crm_research_company first if it names a "
-            f"company, show what you found for confirmation, then create. If a Deal "
-            f"or other record refers to an Organization (or other linked record) that "
-            f"doesn't exist yet, this follows the same missing-dependency flow "
-            f"described earlier: crm_create will come back with "
-            f"invalid_link_fields/creatable=true, so ask the user to confirm creating "
-            f"that Organization first, create it once they confirm, then retry the "
-            f"original create with the same value -- never invent data that isn't "
-            f"actually present in the document or the conversation. If required fields "
-            f"are missing from the document, ask the user for them instead of guessing.]"
-            f"\n\n{doc['text'][:40000]}"
-        )
-        initial_messages = [SystemMessage(content=doc_context)] + initial_messages
-        doc["injected"] = True
 
     config_dict = {
         "configurable": {"thread_id": session_id},
