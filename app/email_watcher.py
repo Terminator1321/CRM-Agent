@@ -158,7 +158,10 @@ async def _handle_new_client_email(sender_email: str, subject: str, body: str, s
     # Nobody online -- ask by email instead, and remember we're waiting on
     # a reply before we act.
     logger.info("[EmailWatcher] No one online; emailing %s for lead approval", FALLBACK_USER_EMAIL)
-    question_subject = f"New client inquiry -- create a lead? ({sender_email})"
+    reader = EmailReader()
+    ref_token = reader.new_ref_token()
+    base_subject = f"New client inquiry -- create a lead? ({sender_email})"
+    question_subject = reader.embed_ref_token(base_subject, ref_token)
     question_body = (
         f"A new client email came in that isn't tied to an existing CRM record.\n\n"
         f"From    : {sender_email}\n"
@@ -166,9 +169,11 @@ async def _handle_new_client_email(sender_email: str, subject: str, body: str, s
         f"Summary : {summary}\n\n"
         f"---\n{body[:800]}\n---\n\n"
         f"Reply to this email with \"yes\" (or \"create it\") to create a lead, "
-        f"or \"no\" to skip it."
+        f"or \"no\" to skip it.\n\n"
+        f"(Please keep the [REF-{ref_token}] tag in the subject line when replying "
+        f"-- some mail apps strip the parts we'd normally use to match your reply "
+        f"back to this specific request.)"
     )
-    reader = EmailReader()
     ok, msg, question_message_id = await asyncio.to_thread(
         reader.send_new_email, FALLBACK_USER_EMAIL, question_subject, question_body
     )
@@ -183,7 +188,7 @@ async def _handle_new_client_email(sender_email: str, subject: str, body: str, s
         "body": body,
     })
     await asyncio.to_thread(
-        reader.create_pending_action, question_message_id, "create_lead", payload, FALLBACK_USER_EMAIL
+        reader.create_pending_action, question_message_id, "create_lead", payload, FALLBACK_USER_EMAIL, question_subject, ref_token
     )
     logger.info("[EmailWatcher] Pending lead-approval sent to %s, waiting on reply", FALLBACK_USER_EMAIL)
 

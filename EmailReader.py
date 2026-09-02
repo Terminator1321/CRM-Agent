@@ -7,6 +7,7 @@ import sqlite3
 import hashlib
 import time
 import smtplib
+import uuid
 from collections import defaultdict
 from typing import Optional
 from email.header import decode_header
@@ -64,11 +65,18 @@ class EmailReader:
             action_type          TEXT,
             payload_json         TEXT,
             asked_to             TEXT,
+            question_subject     TEXT,
+            ref_token            TEXT,
             status               TEXT DEFAULT 'pending',
             created_at           TEXT DEFAULT CURRENT_TIMESTAMP,
             resolved_at          TEXT
         )
         """)
+        existing_pending = {row[1] for row in cur.execute("PRAGMA table_info(pending_actions)")}
+        if "question_subject" not in existing_pending:
+            cur.execute("ALTER TABLE pending_actions ADD COLUMN question_subject TEXT")
+        if "ref_token" not in existing_pending:
+            cur.execute("ALTER TABLE pending_actions ADD COLUMN ref_token TEXT")
         conn.commit()
         conn.close()
 
@@ -473,41 +481,85 @@ class EmailReader:
         except Exception as exc:
             return False, f"SMTP error: {exc}", ""
 
-    def create_pending_action(self, question_message_id: str, action_type: str, payload_json: str, asked_to: str):
+    @staticmethod
+    def new_ref_token() -> str:
+        """Short unique token embedded in outbound question subjects, e.g.
+        '[REF-a83f2c91]'. Lets a reply be matched exactly even if the mail
+        client stripped In-Reply-To/References -- no fuzzy subject guessing."""
+        return uuid.uuid4().hex[:8]
+
+    @staticmethod
+    def embed_ref_token(subject: str, token: str) -> str:
+        return f"{subject} [REF-{token}]"
+
+    _REF_TOKEN_RE = re.compile(r"\[REF-([a-f0-9]{8})\]")
+
+    @classmethod
+    def extract_ref_token(cls, subject: str) -> Optional[str]:
+        match = cls._REF_TOKEN_RE.search(subject or "")
+        return match.group(1) if match else None
+
+    def create_pending_action(self, question_message_id: str, action_type: str, payload_json: str, asked_to: str, question_subject: str = "", ref_token: str = ""):
         conn = sqlite3.connect(self.db_name)
         cur = conn.cursor()
         cur.execute("""
-        INSERT OR REPLACE INTO pending_actions (question_message_id, action_type, payload_json, asked_to, status)
-        VALUES (?, ?, ?, ?, 'pending')
-        """, (question_message_id, action_type, payload_json, asked_to))
+        INSERT OR REPLACE INTO pending_actions (question_message_id, action_type, payload_json, asked_to, question_subject, ref_token, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending')
+        """, (question_message_id, action_type, payload_json, asked_to, question_subject, ref_token))
         conn.commit()
         conn.close()
 
     def find_pending_action_for_reply(self, msg: dict) -> Optional[tuple]:
         """
         Given a freshly-fetched message dict (from _parse_ids), checks whether
-        it's a reply to a question we're waiting on -- i.e. its In-Reply-To or
-        any References entry matches a pending_actions.question_message_id
-        that's still status='pending'.
+        it's a reply to a question we're waiting on.
+
+        Tries two ways, in order:
+        1. Header-based: its In-Reply-To or any References entry matches a
+           pending_actions.question_message_id. Reliable, works whenever the
+           reply preserves standard email headers.
+        2. Ref-token fallback: some mail clients (notably some mobile apps)
+           strip In-Reply-To/References on reply. Every outbound question's
+           subject carries a unique "[REF-xxxxxxxx]" tag; if headers don't
+           match, this extracts that tag from the reply's subject (quoted
+           replies normally keep the original subject line intact even when
+           headers are dropped) and looks it up exactly -- no ambiguity,
+           unlike guessing from subject text alone.
 
         Returns the pending_actions row (as a tuple) if matched, else None.
         """
         candidates = [msg.get("in_reply_to", "")] + (msg.get("references") or [])
         candidates = [c for c in candidates if c]
-        if not candidates:
-            return None
 
         conn = sqlite3.connect(self.db_name)
         cur = conn.cursor()
-        placeholders = ",".join("?" for _ in candidates)
-        cur.execute(f"""
-        SELECT question_message_id, action_type, payload_json, asked_to, status
-        FROM pending_actions
-        WHERE question_message_id IN ({placeholders}) AND status = 'pending'
-        """, candidates)
-        row = cur.fetchone()
+
+        row = None
+        if candidates:
+            placeholders = ",".join("?" for _ in candidates)
+            cur.execute(f"""
+            SELECT question_message_id, action_type, payload_json, asked_to, status
+            FROM pending_actions
+            WHERE question_message_id IN ({placeholders}) AND status = 'pending'
+            """, candidates)
+            row = cur.fetchone()
+
+        if not row:
+            token = self.extract_ref_token(msg.get("subject", ""))
+            if token:
+                cur.execute("""
+                SELECT question_message_id, action_type, payload_json, asked_to, status
+                FROM pending_actions
+                WHERE status = 'pending' AND ref_token = ?
+                """, (token,))
+                row = cur.fetchone()
+                if row:
+                    print(f"[EmailReader] Matched reply to pending action '{row[0]}' by ref token (no reply headers present)")
+
         conn.close()
         return row
+
+
 
     def resolve_pending_action(self, question_message_id: str, status: str):
         conn = sqlite3.connect(self.db_name)
