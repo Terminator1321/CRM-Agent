@@ -4,11 +4,19 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import agent_setup, config, state, tool_exec
+from app import agent_setup, config, session_index, state, tool_exec
 from app.graph.nodes import load_stream_history, save_stream_history
 from app.lifespan import lifespan
 from app.logging_setup import logger
-from app.routes import audit_routes, chat_routes, dashboard_routes, document_routes, health_routes, session_routes
+from app.routes import (
+    audit_routes,
+    chat_routes,
+    dashboard_routes,
+    document_routes,
+    health_routes,
+    history_routes,
+    session_routes,
+)
 from app.streaming import stream_agent_turn
 from Voice.voice_routes import voice_router
 from Voice.ws_voice import register_voice_ws
@@ -30,8 +38,17 @@ app.include_router(document_routes.router)
 app.include_router(chat_routes.router)
 app.include_router(audit_routes.router)
 app.include_router(health_routes.router)
+app.include_router(history_routes.router)
 
-register_voice_ws(app, stream_agent_turn, agent_setup.assistant.tts, logger, load_stream_history, save_stream_history)
+register_voice_ws(
+    app,
+    stream_agent_turn,
+    agent_setup.assistant.tts,
+    logger,
+    load_stream_history,
+    save_stream_history,
+    session_index.touch,
+)
 
 # Exposed on app.state so Voice/voice_routes.py can reach shared state without circular imports.
 app.state.session_identities = state.session_identities

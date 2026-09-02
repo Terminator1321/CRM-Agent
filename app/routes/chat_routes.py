@@ -9,7 +9,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .. import agent_setup, state
+from .. import agent_setup, session_index, state
 from ..graph.nodes import generate_reply, load_stream_history, save_stream_history
 from ..logging_setup import logger
 from ..streaming import stream_agent_turn
@@ -126,6 +126,9 @@ async def chat_stream(req: ChatRequest):
             delta = history[start_len:]
             if delta:
                 state.safe_create_task(save_stream_history(req.session_id, delta))
+                state.safe_create_task(
+                    session_index.touch(req.session_id, channel="chat", preview_text=text, increment=len(delta))
+                )
 
         yield "data: [DONE]\n\n"
 

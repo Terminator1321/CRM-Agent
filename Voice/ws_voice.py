@@ -25,7 +25,7 @@ def safe_create_task(coro):
     return task
 
 
-def register_voice_ws(app, stream_agent_turn, tts, logger, load_stream_history, save_stream_history):
+def register_voice_ws(app, stream_agent_turn, tts, logger, load_stream_history, save_stream_history, index_touch=None):
 
     @app.websocket("/ws/voice")
     async def ws_voice(ws: WebSocket, session_id: str = "voice-default", user_id: str = None):
@@ -181,6 +181,10 @@ def register_voice_ws(app, stream_agent_turn, tts, logger, load_stream_history, 
                 delta = history[start_len:]
                 if delta:
                     safe_create_task(save_stream_history(session_id, delta))
+                    if index_touch:
+                        safe_create_task(
+                            index_touch(session_id, channel="voice", preview_text=text, increment=len(delta))
+                        )
 
         # ------------------------------------------------------------------ #
         # Main receive loop                                                   #
