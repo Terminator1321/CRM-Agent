@@ -63,11 +63,12 @@ async def upload_general_document(
         else:
             extraction = extract_text_generic(file_bytes=file_bytes, filename=file.filename)
 
-        state.document_store[session_id] = {
-            "filename": file.filename,
-            "text": extraction["text"],
-            "injected": False,
-        }
+        agent_setup.doc_rag.index_document(
+            session_id=session_id,
+            filename=file.filename,
+            text=extraction["text"],
+        )
+        state.document_store[session_id] = {"filename": file.filename}
 
         audit_log.record_file_upload(
             **upload_meta,

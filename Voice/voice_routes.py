@@ -404,16 +404,16 @@ async def execute_voice_tool(
 
 
 @voice_router.get("/session/{session_id}/document-context")
-async def get_document_context(session_id: str):
+async def get_document_context(session_id: str, query: str = None):
     """
-    Returns the same document-context note the text/streaming chat path
-    injects into its system prompt on every turn (see
+    Returns the same RAG-backed document-context note the text/streaming
+    chat path injects into its system prompt on every turn (see
     app.streaming.build_document_context_note), so the Realtime voice
     frontend can push it into the live conversation right after a file
     upload -- the Realtime model is a separate OpenAI session with its own
-    conversation state, so it has no automatic access to state.document_store.
+    conversation state, so it has no automatic access to the indexed document.
     """
-    note = build_document_context_note(session_id)
+    note = build_document_context_note(session_id, query=query)
     return {"note": note}
 
 

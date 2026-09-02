@@ -1,4 +1,5 @@
 """Startup/shutdown hooks: Postgres audit-log schema + persistent LangGraph checkpointer."""
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -6,6 +7,7 @@ from fastapi import FastAPI
 from db.init_db import apply_schema
 
 from . import state
+from .email_watcher import run_email_watcher
 from .graph.nodes import build_agent_graph
 from .logging_setup import logger
 
@@ -34,7 +36,18 @@ async def lifespan(app: FastAPI):
         await saver.setup()
         state.agent_graph = build_agent_graph(checkpointer=saver)
         logger.info("AsyncSqliteSaver persistent memory ready.")
-        yield
+
+        # Email watcher runs as its own task, deliberately separate from the
+        # chat/voice request path -- it wakes on a timer, not on a request.
+        watcher_task = asyncio.create_task(run_email_watcher())
+        try:
+            yield
+        finally:
+            watcher_task.cancel()
+            try:
+                await watcher_task
+            except asyncio.CancelledError:
+                pass
     finally:
         await state.checkpoint_conn.close()
         state.checkpoint_conn = None

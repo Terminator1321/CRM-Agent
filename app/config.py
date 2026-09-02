@@ -13,6 +13,11 @@ TOOL_RAG_BYPASS_THRESHOLD = 100
 TOOL_RAG_TOP_K = int(os.environ.get("TOOL_RAG_TOP_K", "3"))
 TOOL_RAG_MIN_SCORE = float(os.environ.get("TOOL_RAG_MIN_SCORE", "0.25"))
 
+DOC_RAG_CHUNK_SIZE = int(os.environ.get("DOC_RAG_CHUNK_SIZE", "800"))
+DOC_RAG_CHUNK_OVERLAP = int(os.environ.get("DOC_RAG_CHUNK_OVERLAP", "120"))
+DOC_RAG_TOP_K = int(os.environ.get("DOC_RAG_TOP_K", "5"))
+DOC_RAG_MIN_SCORE = float(os.environ.get("DOC_RAG_MIN_SCORE", "0.2"))
+
 MAX_HISTORY_TOKENS = 60000
 
 CORS_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]

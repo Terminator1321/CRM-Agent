@@ -143,40 +143,42 @@ async def _stream_full_reply(call_messages, tools=None):
     yield {"type": "done", "content": content, "tool_calls": tool_calls}
 
 
-def build_document_context_note(session_id):
-    """Returns the system-prompt note for the session's uploaded document
-    (if any), or None. Called fresh on EVERY turn from wherever the system
-    prompt is assembled -- never stashed as a one-off message in message
-    history, so it can never be trimmed out of context or forgotten as a
-    conversation grows. The document stays available for as long as
-    state.document_store holds it (i.e. until the user uploads a
-    different file for this session)."""
-    doc = state.document_store.get(session_id) if session_id else None
-    if not doc:
+def build_document_context_note(session_id, query=None):
+    # Retrieval-based system-prompt note for the session's uploaded document
+    if not session_id or not agent_setup.doc_rag.has_document(session_id):
         return None
-    return (
+
+    filename = agent_setup.doc_rag.get_filename(session_id)
+    chunks = agent_setup.doc_rag.retrieve(session_id, query) if query else []
+
+    instructions = (
         f"\n[System note: the user has an uploaded document named "
-        f"'{doc['filename']}' available for this entire conversation. Its "
-        f"full extracted content is below. Use it to answer any questions "
-        f"they ask about it, now or later in this conversation. Also treat "
-        f"it as a possible source of CRM record data: if the user's message "
-        f"(or the document's own content) asks you to create or update a "
-        f"Lead, Deal, Organization, or Contact, pull the relevant fields "
-        f"out of this text yourself and proceed via crm_create/crm_update "
-        f"exactly as you would for any other request -- run "
-        f"crm_research_company first if it names a company, show what you "
-        f"found for confirmation, then create. If a Deal or other record "
-        f"refers to an Organization (or other linked record) that doesn't "
-        f"exist yet, this follows the same missing-dependency flow "
-        f"described earlier: crm_create will come back with "
-        f"invalid_link_fields/creatable=true, so ask the user to confirm "
-        f"creating that Organization first, create it once they confirm, "
-        f"then retry the original create with the same value -- never "
-        f"invent data that isn't actually present in the document or the "
-        f"conversation. If required fields are missing from the document, "
-        f"ask the user for them instead of guessing.]"
-        f"\n\n{doc['text'][:40000]}"
+        f"'{filename}' available for this entire conversation. Relevant "
+        f"excerpts retrieved for the current turn are below (if any). Use "
+        f"them to answer questions about the document, now or later in this "
+        f"conversation. Also treat retrieved excerpts as a possible source "
+        f"of CRM record data: if the user's message (or the document's own "
+        f"content) asks you to create or update a Lead, Deal, Organization, "
+        f"or Contact, pull the relevant fields out of the excerpts yourself "
+        f"and proceed via crm_create/crm_update exactly as you would for "
+        f"any other request -- run crm_research_company first if it names a "
+        f"company, show what you found for confirmation, then create. If a "
+        f"Deal or other record refers to an Organization (or other linked "
+        f"record) that doesn't exist yet, this follows the same "
+        f"missing-dependency flow described earlier: crm_create will come "
+        f"back with invalid_link_fields/creatable=true, so ask the user to "
+        f"confirm creating that Organization first, create it once they "
+        f"confirm, then retry the original create with the same value -- "
+        f"never invent data that isn't actually present in the retrieved "
+        f"excerpts or the conversation. If the excerpts below don't cover "
+        f"what's needed, ask the user for it instead of guessing.]"
     )
+
+    if not chunks:
+        return instructions
+
+    excerpts = "\n\n---\n\n".join(chunks)
+    return f"{instructions}\n\n{excerpts}"
 
 
 async def stream_agent_turn(text, session_id=None, user_id=None, history=None, task_context=None):
@@ -206,7 +208,7 @@ async def stream_agent_turn(text, session_id=None, user_id=None, history=None, t
     if task_context:
         system_parts.append(f"\nCurrent task in progress: {task_context}.")
 
-    doc_note = build_document_context_note(session_id)
+    doc_note = build_document_context_note(session_id, query=text)
     if doc_note:
         system_parts.append(doc_note)
 

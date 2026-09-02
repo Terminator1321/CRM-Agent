@@ -258,7 +258,10 @@ async def general_node(state_in: ChatState) -> dict:
     if task_context:
         system_parts.append(f"\nCurrent task in progress: {task_context}.")
 
-    doc_note = build_document_context_note(state_in.get("session_id"))
+    doc_note = build_document_context_note(
+        state_in.get("session_id"),
+        query=last_human_message(state_in["messages"]),
+    )
     if doc_note:
         system_parts.append(doc_note)
 

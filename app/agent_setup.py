@@ -24,7 +24,9 @@ LLM.model = _model
 from Main import VoiceAssistant  # noqa: E402  (must follow the LLM.model patch above)
 from CRM_Unified.tools import CRM_TOOLS  # noqa: E402
 from CRM_Unified.tool_rag import ToolRAG  # noqa: E402
+from CRM_Unified.document_rag import DocumentRAG  # noqa: E402
 from web.web_tool import WEB_TOOLS  # noqa: E402
+from mailer.email_tools import EMAIL_TOOLS  # noqa: E402
 
 logger.info("Loading VoiceAssistant agent (STT=%s, LLM=%s)...", config.WHISPER_MODEL, config.LLM_MODEL)
 assistant = VoiceAssistant(
@@ -35,7 +37,7 @@ assistant = VoiceAssistant(
 )
 text_chain = assistant.prompt | assistant.llm.model | StrOutputParser()
 
-ALL_TOOLS = [*CRM_TOOLS, *WEB_TOOLS]
+ALL_TOOLS = [*CRM_TOOLS, *WEB_TOOLS, *EMAIL_TOOLS]
 ALL_REQUIRED_FIELDS: dict = {}
 ALL_FIELD_PARSERS: dict = {}
 
@@ -48,3 +50,10 @@ logger.info("Loaded %d CRM/web tools.", len(ALL_TOOLS))
 
 # Dedicated LLM instance for document OCR/extraction, kept history-free.
 llm_ocr_engine = LLM()
+
+doc_rag = DocumentRAG(
+    chunk_size=config.DOC_RAG_CHUNK_SIZE,
+    chunk_overlap=config.DOC_RAG_CHUNK_OVERLAP,
+    top_k=config.DOC_RAG_TOP_K,
+    min_score=config.DOC_RAG_MIN_SCORE,
+)
