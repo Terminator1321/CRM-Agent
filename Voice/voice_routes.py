@@ -54,9 +54,90 @@ ALLOWED_VOICE_TOOLS: set[str] = {
     "crm_activities",
     "crm_contact_action",
     "crm_research_company",
+    "crm_task_assignment_options",  # read-only: lists team members for task assignment
+    "crm_create_user",  # gated by the same explicit-confirmation flow as text chat (see GENERAL_CRM_PROMPT)
     "web_company_search",
     "web_company_extract",
     "web_search",
+}
+
+# ---------------------------------------------------------------------------
+# Client-side rendering tools -- these are the voice equivalent of the
+# ```chart / Markdown-table blocks text chat emits. They carry no CRM/audit
+# side effects: calling one just pushes a chart or table into the live
+# transcript panel next to the assistant's spoken turn. They're handled
+# entirely on the frontend (see useRealtimeVoiceSession.js's runToolCall),
+# so execute_voice_tool() below short-circuits before the CRM tool
+# whitelist/audit path for these two names.
+# ---------------------------------------------------------------------------
+VISUAL_VOICE_TOOLS: set[str] = {"display_chart", "display_table"}
+
+DISPLAY_CHART_SCHEMA = {
+    "type": "function",
+    "name": "display_chart",
+    "description": (
+        "Show a pie, bar, or line chart in the user's transcript panel. Use this whenever "
+        "you would show a distribution, comparison, or trend and have real numbers from a "
+        "tool result to plot -- never invent data points. Do not read the chart data aloud; "
+        "call this, then speak only a one-sentence summary of the headline number or trend."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "enum": ["pie", "bar", "line"]},
+            "title": {"type": "string", "description": "Short chart title."},
+            "labels": {
+                "type": "array", "items": {"type": "string"},
+                "description": "Pie only: category labels.",
+            },
+            "values": {
+                "type": "array", "items": {"type": "number"},
+                "description": "Pie only: one numeric value per label.",
+            },
+            "xAxis": {
+                "type": "array", "items": {"type": "string"},
+                "description": "Bar/line only: the category or time-period labels.",
+            },
+            "series": {
+                "type": "array",
+                "description": "Bar/line only: one or more named data series, each aligned to xAxis.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "data": {"type": "array", "items": {"type": "number"}},
+                    },
+                    "required": ["name", "data"],
+                },
+            },
+        },
+        "required": ["type"],
+    },
+}
+
+DISPLAY_TABLE_SCHEMA = {
+    "type": "function",
+    "name": "display_table",
+    "description": (
+        "Show a data table in the user's transcript panel. Use this whenever a tool result "
+        "is a list of 3+ records with the same fields (leads, deals, tasks, contacts, "
+        "organizations, search results, etc.) instead of listing every record aloud. Keep "
+        "columns to what the user actually needs. Do not read the table aloud; call this, "
+        "then speak only a brief one-sentence summary (e.g. how many rows, or the headline one)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Optional short table title."},
+            "headers": {"type": "array", "items": {"type": "string"}},
+            "rows": {
+                "type": "array",
+                "description": "Each row is an array of string cell values, same length as headers.",
+                "items": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+        "required": ["headers", "rows"],
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -168,6 +249,12 @@ async def get_voice_config(session_id: str, state=Depends(_get_server_state)):
             except Exception:
                 logger.warning("Could not convert tool %s to schema", tool.name)
 
+    # Add the two client-side visual tools (chart/table) alongside the CRM
+    # tool schemas -- these are what let voice show a chart/table just like
+    # text chat does, instead of trying to speak a table or JSON aloud.
+    allowed_schemas.append(DISPLAY_CHART_SCHEMA)
+    allowed_schemas.append(DISPLAY_TABLE_SCHEMA)
+
     # Build the voice system prompt from the SAME operational guidance text
     # chat uses (GENERAL_CRM_PROMPT) -- search-before-acting rules, the
     # invalid_link_fields handling logic, task-assignment flow, company
@@ -187,10 +274,18 @@ async def get_voice_config(session_id: str, state=Depends(_get_server_state)):
         operational_guidance
         + "\n\nYou are currently in a VOICE conversation, not text chat -- adjust delivery only, "
         "not judgment or tool usage:\n"
-        "- Keep replies to 1-3 sentences. No markdown formatting, no bullet lists, no tables, "
-        "no chart blocks, no 'Next actions:' A/B/C block -- none of that can be spoken. Say the "
-        "next options naturally instead if relevant (e.g. 'Want me to update it or create a deal "
-        "for it?').\n"
+        "- Keep spoken replies to 1-3 sentences. No markdown formatting, no bullet lists, no "
+        "'Next actions:' A/B/C block -- none of that can be spoken.  Say the next options "
+        "naturally instead if relevant (e.g. 'Want me to update it or create a deal for it?').\n"
+        "- TABLES AND CHARTS: you still have the same tables/charts abilities as text chat, "
+        "just delivered differently. Whenever the guidance above would have you produce a "
+        "Markdown table (3+ records with the same fields) or a chart (distribution/comparison/"
+        "trend the user asked to see, compare, or visualize), call the display_table or "
+        "display_chart tool with the real data from your last tool result -- never invent "
+        "numbers. That tool call renders the table/chart on the user's screen; it is silent, "
+        "so immediately follow it with a short spoken sentence (the headline number or trend), "
+        "never read the rows or data points aloud. Call at most one display_table or "
+        "display_chart per turn.\n"
         "- You cannot open a file picker yourself -- if the user wants to upload, attach, or "
         "share a file, tell them to tap the Attach button on their screen. Once a file is "
         "uploaded you will receive its contents as a message and can answer questions about it "
@@ -260,6 +355,15 @@ async def execute_voice_tool(
             status_code=401,
             detail="No active voice session. Call /api/voice/session/start first.",
         )
+
+    # 1b. Visual tools (display_chart/display_table) have no CRM/audit side
+    # effect -- they just push data to the frontend for rendering, which the
+    # frontend already does itself the moment it sees this tool call (see
+    # runToolCall in useRealtimeVoiceSession.js). If a client is slow and
+    # still round-trips this through the API, just acknowledge it so the
+    # model's tool call resolves and it keeps talking.
+    if req.tool_name in VISUAL_VOICE_TOOLS:
+        return {"call_id": req.call_id, "result": "Displayed to the user."}
 
     # 2. Enforce tool whitelist
     if req.tool_name not in ALLOWED_VOICE_TOOLS:
