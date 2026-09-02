@@ -28,6 +28,7 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import BaseModel
 
 from LLM.LLM import GENERAL_CRM_PROMPT
+from app.streaming import build_document_context_note
 from Voice.voice_session_manager import (
     create_voice_session,
     get_voice_session,
@@ -159,7 +160,11 @@ async def get_voice_config(session_id: str, state=Depends(_get_server_state)):
         "You are Magna, a professional AI voice assistant for a standalone Frappe CRM. "
         "You are speaking — keep all replies to 1-3 sentences maximum. No markdown formatting, "
         "no bullet lists, no action pills. Speak naturally and concisely. "
-        "You have access to CRM tools. Always confirm destructive actions before executing them."
+        "You have access to CRM tools. Always confirm destructive actions before executing them. "
+        "You cannot open a file picker yourself — if the user wants to upload, attach, or share a "
+        "file, tell them to tap the Attach button on their screen. Once a file is uploaded you will "
+        "receive its contents as a message and can answer questions about it or use it to create "
+        "CRM records."
     )
 
     # Load recent conversation history from stream_history for context continuity
@@ -247,6 +252,20 @@ async def execute_voice_tool(
         "call_id": req.call_id,
         "result": str(result),
     }
+
+
+@voice_router.get("/session/{session_id}/document-context")
+async def get_document_context(session_id: str):
+    """
+    Returns the same document-context note the text/streaming chat path
+    injects into its system prompt on every turn (see
+    app.streaming.build_document_context_note), so the Realtime voice
+    frontend can push it into the live conversation right after a file
+    upload -- the Realtime model is a separate OpenAI session with its own
+    conversation state, so it has no automatic access to state.document_store.
+    """
+    note = build_document_context_note(session_id)
+    return {"note": note}
 
 
 @voice_router.delete("/session/{session_id}")
