@@ -249,7 +249,19 @@ def crm_metadata(doctype: str) -> str:
 @tool
 def crm_search(doctype: str, filters: Optional[dict] = None, search_text: Optional[str] = None,
                fields: Optional[list] = None, order_by: Optional[str] = None, limit: int = 20, start: int = 0) -> str:
-    """Search CRM records using the standard Frappe resource API."""
+    """Search CRM records using the standard Frappe resource API.
+
+    IMPORTANT for "how many" / total-count questions: the "count" field in
+    the result is just the number of rows THIS call returned, capped at
+    whatever "limit" you passed (max 100, default 20) -- it is NEVER the
+    true total number of matching records in the system. Never infer a
+    total count from a single narrow record (e.g. a record's ID/name
+    suffix is not a count). To answer "how many X do we have", call with
+    a high limit (up to 100) and no restrictive order_by/filters unless
+    the user asked for a subset, then count the returned records yourself.
+    If more than 100 records could match, say the count is "100+" rather
+    than presenting it as exact.
+    """
     dt = resolve_doctype(doctype)
     filters = filters or {}
     or_filters = None

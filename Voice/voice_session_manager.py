@@ -29,7 +29,7 @@ async def create_voice_session(
     session_id: str,
     user_id: Optional[str],
     openai_api_key: str,
-    model: str = "gpt-4o-realtime-preview-2024-12-17",
+    model: str = "gpt-realtime",
     voice: str = "alloy",
 ) -> dict:
     """
@@ -41,8 +41,8 @@ async def create_voice_session(
     session_record = {
         "session_id": session_id,
         "user_id": user_id,
-        "ephemeral_token": token_data.get("client_secret", {}).get("value"),
-        "openai_session_id": token_data.get("id"),
+        "ephemeral_token": token_data.get("value"),
+        "openai_session_id": token_data.get("session", {}).get("id"),
         "model": model,
         "voice": voice,
         "created_at": time.time(),
@@ -99,7 +99,17 @@ async def _fetch_ephemeral_token(api_key: str, model: str, voice: str) -> dict:
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json={"session": {"modalities": ["audio", "text"], "model": model, "type": "realtime", "voice": voice}},
+            json={
+                "session": {
+                    "type": "realtime",
+                    "model": model,
+                    "audio": {
+                        "output": {
+                            "voice": voice
+                        }
+                    }
+                }
+            },
         )
         if resp.status_code >= 400:
             logger.error(f"OpenAI error {resp.status_code}: {resp.text}")
@@ -122,8 +132,8 @@ async def _schedule_refresh(session_id: str, api_key: str, model: str, voice: st
         token_data = await _fetch_ephemeral_token(api_key, model, voice)
         record = _active_sessions.get(session_id)
         if record:
-            record["ephemeral_token"] = token_data.get("client_secret", {}).get("value")
-            record["openai_session_id"] = token_data.get("id")
+            record["ephemeral_token"] = token_data.get("value")
+            record["openai_session_id"] = token_data.get("session", {}).get("id")
             record["created_at"] = time.time()
 
             # Schedule the next refresh

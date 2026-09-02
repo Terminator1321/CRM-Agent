@@ -67,7 +67,7 @@ class VoiceSessionStartRequest(BaseModel):
     session_id: str
     user_id: Optional[str] = None
     voice: str = "alloy"
-    model: str = "gpt-4o-realtime-preview-2024-12-17"
+    model: str = "gpt-realtime"
 
 
 class VoiceToolRequest(BaseModel):
@@ -146,25 +146,59 @@ async def get_voice_config(session_id: str, state=Depends(_get_server_state)):
         if tool.name in ALLOWED_VOICE_TOOLS:
             try:
                 schema = convert_to_openai_tool(tool)
-                # Strip any fields that cause OpenAI 400 validation errors
-                if "function" in schema and "parameters" in schema["function"]:
-                    params = schema["function"]["parameters"]
-                    params.pop("additionalProperties", None)
-                    params.pop("title", None)
-                allowed_schemas.append(schema)
+                # convert_to_openai_tool() returns Chat-Completions-style
+                # shape: {"type": "function", "function": {"name": ...,
+                # "description": ..., "parameters": {...}}}. The Realtime
+                # API (like the Responses API) expects a FLAT shape --
+                # name/description/parameters directly on the tool object,
+                # no nested "function" wrapper. Sending the nested shape
+                # doesn't error, it just silently produces no callable
+                # tools, which is why voice had no tool access while text
+                # chat (Chat Completions) worked fine.
+                fn = schema.get("function", {})
+                params = fn.get("parameters", {})
+                params.pop("additionalProperties", None)
+                params.pop("title", None)
+                allowed_schemas.append({
+                    "type": "function",
+                    "name": fn.get("name"),
+                    "description": fn.get("description", ""),
+                    "parameters": params,
+                })
             except Exception:
                 logger.warning("Could not convert tool %s to schema", tool.name)
 
-    # Build the voice system prompt (shorter and more voice-natural)
+    # Build the voice system prompt from the SAME operational guidance text
+    # chat uses (GENERAL_CRM_PROMPT) -- search-before-acting rules, the
+    # invalid_link_fields handling logic, task-assignment flow, company
+    # research requirements, etc. Voice previously used a separate,
+    # much shorter hand-written prompt that dropped nearly all of this,
+    # which is why voice's tool use was noticeably less reliable than
+    # text chat's (e.g. answering "how many leads" from a single narrow
+    # record instead of doing a proper search). Only the *formatting*
+    # tail (Markdown tables/charts/action-block instructions, which make
+    # no sense spoken aloud) is swapped out for voice-appropriate rules.
+    _FORMATTING_MARKER = "Presenting data -- tables and charts:"
+    _marker_pos = GENERAL_CRM_PROMPT.find(_FORMATTING_MARKER)
+    operational_guidance = (
+        GENERAL_CRM_PROMPT[:_marker_pos] if _marker_pos != -1 else GENERAL_CRM_PROMPT
+    )
     voice_prompt = (
-        "You are Magna, a professional AI voice assistant for a standalone Frappe CRM. "
-        "You are speaking — keep all replies to 1-3 sentences maximum. No markdown formatting, "
-        "no bullet lists, no action pills. Speak naturally and concisely. "
-        "You have access to CRM tools. Always confirm destructive actions before executing them. "
-        "You cannot open a file picker yourself — if the user wants to upload, attach, or share a "
-        "file, tell them to tap the Attach button on their screen. Once a file is uploaded you will "
-        "receive its contents as a message and can answer questions about it or use it to create "
-        "CRM records."
+        operational_guidance
+        + "\n\nYou are currently in a VOICE conversation, not text chat -- adjust delivery only, "
+        "not judgment or tool usage:\n"
+        "- Keep replies to 1-3 sentences. No markdown formatting, no bullet lists, no tables, "
+        "no chart blocks, no 'Next actions:' A/B/C block -- none of that can be spoken. Say the "
+        "next options naturally instead if relevant (e.g. 'Want me to update it or create a deal "
+        "for it?').\n"
+        "- You cannot open a file picker yourself -- if the user wants to upload, attach, or "
+        "share a file, tell them to tap the Attach button on their screen. Once a file is "
+        "uploaded you will receive its contents as a message and can answer questions about it "
+        "or use it to create CRM records.\n"
+        "- Still verify names via crm_search, still research companies before creating records, "
+        "still confirm before destructive writes, and still get an accurate total (not a guess "
+        "from one record) before answering any 'how many' question -- speaking concisely doesn't "
+        "mean skipping the same verification steps text chat follows."
     )
 
     # Load recent conversation history from stream_history for context continuity
@@ -182,12 +216,23 @@ async def get_voice_config(session_id: str, state=Depends(_get_server_state)):
         "session_update": {
             "type": "session.update",
             "session": {
+                # GA requires this on every session object, including
+                # session.update events sent over the data channel --
+                # omitting it returns "Missing required parameter:
+                # 'session.type'."
+                "type": "realtime",
                 "instructions": voice_prompt,
                 "tools": allowed_schemas,
                 "tool_choice": "auto",
-                "turn_detection": {"type": "server_vad"},
-                "input_audio_transcription": {"model": "whisper-1"},
-                "voice": voice_record["voice"],
+                "audio": {
+                    "input": {
+                        "turn_detection": {"type": "server_vad"},
+                        "transcription": {"model": "whisper-1"},
+                    },
+                    "output": {
+                        "voice": voice_record["voice"],
+                    },
+                },
             },
         },
         "conversation_history": history,
@@ -301,12 +346,19 @@ def _convert_history_to_realtime_items(history: list) -> list:
             content = msg.get("content", "")
 
         if role and content:
+            # OpenAI's Realtime API requires the content part type to match
+            # the role: user messages use "input_text", assistant messages
+            # must use "output_text" -- mixing these up returns a 400/
+            # validation error ("Invalid value: 'input_text'. Value must
+            # be 'output_text'.") the moment the assistant history item
+            # is sent.
+            content_type = "input_text" if role == "user" else "output_text"
             items.append({
                 "type": "conversation.item.create",
                 "item": {
                     "type": "message",
                     "role": role,
-                    "content": [{"type": "input_text", "text": content}],
+                    "content": [{"type": content_type, "text": content}],
                 },
             })
     return items
