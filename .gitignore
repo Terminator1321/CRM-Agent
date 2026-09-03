@@ -8,3 +8,4 @@ CRM_Unified/models
 eval/runs/
 eval/results.csv
 local_uploads/
+*.db

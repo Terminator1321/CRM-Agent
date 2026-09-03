@@ -16,6 +16,8 @@ import re
 import time
 from fastapi import WebSocket, WebSocketDisconnect
 
+from app import presence
+
 _ws_bg_tasks = set()
 
 def safe_create_task(coro):
@@ -54,6 +56,30 @@ def register_voice_ws(app, stream_agent_turn, tts, logger, load_stream_history, 
                 connected = False
                 raise ConnectionClosed from exc
 
+        async def notify_send(payload: dict):
+            """Adapter passed to presence.register() -- translates a generic
+            notification dict from email_watcher.py (which knows nothing
+            about voice-specific event types) into a voice_sentence the
+            browser already knows how to speak, rather than inventing a new
+            event type the frontend has no handler for."""
+            ntype = payload.get("type")
+            if ntype == "email_notification":
+                text = (
+                    f"New email from {payload.get('from')}. "
+                    f"Subject: {payload.get('subject')}. {payload.get('summary', '')}"
+                )
+            elif ntype == "lead_confirmation_request":
+                text = (
+                    f"New client inquiry from {payload.get('from')}, "
+                    f"subject {payload.get('subject')}. {payload.get('summary', '')}. "
+                    f"Should I create a lead for them?"
+                )
+            else:
+                text = json.dumps(payload)
+            await send_json({"type": "voice_sentence", "text": clean_for_speech(text)})
+
+        presence.register(session_id, "voice", notify_send)
+
         # ------------------------------------------------------------------ #
         # Shared conversation history (same sqlite as /api/chat/stream)       #
         # ------------------------------------------------------------------ #
@@ -74,6 +100,7 @@ def register_voice_ws(app, stream_agent_turn, tts, logger, load_stream_history, 
                     logger.exception("[WS/voice] Turn task raised on cancel")
             state["turn_task"] = None
             state["speaking"] = False
+            presence.set_busy(session_id, False)
 
         # ------------------------------------------------------------------ #
         # Text cleaning for TTS (removes markdown, tables, action tags)       #
@@ -103,6 +130,7 @@ def register_voice_ws(app, stream_agent_turn, tts, logger, load_stream_history, 
             t0 = time.monotonic()
             logger.info("[WS/voice] turn START  session=%s  text=%r", session_id, text[:120])
             state["speaking"] = True
+            presence.set_busy(session_id, True)
             token_buf = ""   # accumulates cleaned text for speech
             
             history = await load_stream_history(session_id)
@@ -176,6 +204,7 @@ def register_voice_ws(app, stream_agent_turn, tts, logger, load_stream_history, 
                     pass
             finally:
                 state["speaking"] = False
+                presence.set_busy(session_id, False)
                 # Save ONLY new messages from this turn (delta) — the checkpointer
                 # uses add_messages which appends, so saving full history would duplicate.
                 delta = history[start_len:]
@@ -235,4 +264,5 @@ def register_voice_ws(app, stream_agent_turn, tts, logger, load_stream_history, 
         finally:
             connected = False
             await cancel_turn()
+            presence.unregister(session_id)
             logger.info("[WS/voice] CLOSED  session=%s", session_id)
