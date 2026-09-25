@@ -82,7 +82,7 @@ class EmailReader:
 
     def connect(self) -> "EmailReader":
         user = os.getenv("GMAIL_USERNAME")
-        pwd  = os.getenv("GMAIL_PASSWORD")
+        pwd  = os.getenv("GMAIL_APP_PASSWORD")
 
         if not user or not pwd:
             raise ValueError(
